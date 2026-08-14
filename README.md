@@ -136,5 +136,5 @@ sudo ./build/rtsp_server --mkv 1000_55_60.mkv
 По умолчанию поток доступен по адресу:
 
 ```text
-rtsp://192.168.0.5:8554/stream
+rtsp://0.0.0.0:8554/stream
 ```
