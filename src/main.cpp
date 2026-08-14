@@ -31,6 +31,7 @@ static gboolean g_low_latency = TRUE;
 static guint g_video_pt = 96;
 static guint g_audio_pt = 8;
 static gboolean g_quiet_rtspclient_logs = FALSE;
+static gboolean g_tcp_only = FALSE;
 static gchar *g_mkv_path = NULL;
 static gboolean g_mkv_has_video = FALSE;
 static gboolean g_mkv_has_audio = FALSE;
@@ -575,6 +576,7 @@ static void print_usage(const char *progname)
     g_print("  %s --mkv 0391_53_50.mkv\n", progname);
     g_print("  %s --video-device /dev/video0 --audio-device plughw:CARD=...,DEV=0\n", progname);
     g_print("  %s --low-latency|--no-low-latency\n", progname);
+    g_print("  %s --tcp-only         # allow RTP over RTSP/TCP only\n", progname);
     g_print("  %s --quiet-rtspclient-logs\n", progname);
 }
 
@@ -713,6 +715,8 @@ static void parse_args(int argc, char *argv[])
             g_low_latency = TRUE;
         } else if (strcmp(argv[i], "--no-low-latency") == 0) {
             g_low_latency = FALSE;
+        } else if (strcmp(argv[i], "--tcp-only") == 0) {
+            g_tcp_only = TRUE;
         } else if (strcmp(argv[i], "--quiet-rtspclient-logs") == 0) {
             g_quiet_rtspclient_logs = TRUE;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -763,9 +767,11 @@ int main(int argc, char *argv[])
     gst_rtsp_media_factory_set_stop_on_disconnect(factory, TRUE);
     gst_rtsp_media_factory_set_protocols(
         factory,
-        (GstRTSPLowerTrans)(GST_RTSP_LOWER_TRANS_UDP |
-                            GST_RTSP_LOWER_TRANS_UDP_MCAST |
-                            GST_RTSP_LOWER_TRANS_TCP));
+        g_tcp_only
+            ? GST_RTSP_LOWER_TRANS_TCP
+            : (GstRTSPLowerTrans)(GST_RTSP_LOWER_TRANS_UDP |
+                                  GST_RTSP_LOWER_TRANS_UDP_MCAST |
+                                  GST_RTSP_LOWER_TRANS_TCP));
     // if (g_low_latency) {
     //     gst_rtsp_media_factory_set_latency(factory, 0);
     // }
@@ -797,6 +803,11 @@ int main(int argc, char *argv[])
                     video_codec_name(), g_mkv_path ? " (MKV video passthrough)" : "",
                     g_host, g_port, g_mount_path);
             break;
+    }
+    if (g_tcp_only) {
+        g_print("RTP transport: TCP only\n");
+    } else {
+        g_print("RTP transport: UDP, UDP multicast, TCP\n");
     }
 
     g_main_loop_run(loop);

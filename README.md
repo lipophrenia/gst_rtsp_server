@@ -99,6 +99,13 @@ sudo ./build/rtsp_server --audio
 ./runapp.sh mkv 0391_53_50.mkv --port 8555 --mount /record
 ```
 
+Для передачи RTP только через interleaved TCP добавьте `--tcp-only`:
+
+```sh
+./runapp.sh mkv 0391_53_50.mkv --tcp-only
+./runapp.sh camera h264 --tcp-only
+```
+
 Запуск без скрипта:
 
 ```sh
@@ -109,6 +116,33 @@ sudo ./build/rtsp_server --mkv 1000_55_60.mkv
 Сервер сам определяет состав дорожек и исходный видеокодек. В режиме passthrough
 поддерживаются видеодорожки H.264 и H.265. Воспроизведение завершается при достижении
 конца файла.
+
+## Отладочный запуск
+
+`runapp_debug.sh` принимает те же параметры, что и `runapp.sh`, и запускает сервер
+с `GST_DEBUG=5`:
+
+```sh
+./runapp_debug.sh h264
+./runapp_debug.sh mkv 1000_55_60.mkv
+./runapp_debug.sh mkv 1000_55_60.mkv --tcp-only
+```
+
+Для выбора другого уровня отладки передайте стандартную переменную GStreamer
+`GST_DEBUG` обычному скрипту запуска. `runapp.sh` сохраняет её при запуске сервера
+через `sudo`:
+
+```sh
+GST_DEBUG=3 ./runapp.sh h264
+GST_DEBUG=4 ./runapp.sh mkv 1000_55_60.mkv --tcp-only
+GST_DEBUG='rtsp*:6,matroska*:5,*:3' ./runapp.sh mkv 0391_53_50.mkv
+```
+
+При запуске сервера напрямую переменную нужно передать после `sudo`:
+
+```sh
+sudo GST_DEBUG=3 ./build/rtsp_server --mkv 1000_55_60.mkv --tcp-only
+```
 
 ## Параметры сервера
 
@@ -130,6 +164,7 @@ sudo ./build/rtsp_server --mkv 1000_55_60.mkv
 --audio-pt PT               RTP payload type для аудио
 --low-latency               режим низкой задержки для устройств
 --no-low-latency            отключить режим низкой задержки
+--tcp-only                  разрешить только RTP over RTSP/TCP
 --quiet-rtspclient-logs     отключить отладочные сообщения rtspclient
 ```
 

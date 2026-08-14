@@ -20,11 +20,18 @@ Examples:
 EOF
 }
 
+run_server() {
+    if [[ -n "${GST_DEBUG:-}" ]]; then
+        exec sudo GST_DEBUG="$GST_DEBUG" ./build/rtsp_server "$@"
+    fi
+    exec sudo ./build/rtsp_server "$@"
+}
+
 case "${1:-camera}" in
     h264|h265)
         codec="$1"
         shift
-        exec sudo ./build/rtsp_server --both --codec "$codec" "$@"
+        run_server --both --codec "$codec" "$@"
         ;;
     camera)
         if (( $# > 0 )); then
@@ -39,7 +46,7 @@ case "${1:-camera}" in
             usage >&2
             exit 1
         fi
-        exec sudo ./build/rtsp_server --both --codec "$codec" "$@"
+        run_server --both --codec "$codec" "$@"
         ;;
     mkv)
         if (( $# < 2 )); then
@@ -54,13 +61,13 @@ case "${1:-camera}" in
             usage >&2
             exit 1
         fi
-        exec sudo ./build/rtsp_server --mkv "$mkv_file" "$@"
+        run_server --mkv "$mkv_file" "$@"
         ;;
     --help|-h)
         usage
         ;;
     --*)
-        exec sudo ./build/rtsp_server "$@"
+        run_server "$@"
         ;;
     *)
         echo "Unknown mode: $1" >&2
