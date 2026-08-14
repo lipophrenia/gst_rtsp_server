@@ -19,7 +19,7 @@ enum VideoCodec {
 
 static StreamMode g_mode = MODE_BOTH;
 static VideoCodec g_video_codec = VIDEO_CODEC_H264;
-static const char *g_host = "192.168.0.5";
+static const char *g_host = "0.0.0.0";
 static const char *g_mount_path = "/stream";
 static const char *g_video_device = "/dev/video0";
 static const char *g_audio_device = "plughw:CARD=rockchipes8388,DEV=0";
@@ -568,7 +568,7 @@ static void print_usage(const char *progname)
     g_print("  %s --both             # video + audio\n", progname);
     g_print("  %s --video            # video only\n", progname);
     g_print("  %s --audio            # audio only\n", progname);
-    g_print("  %s --port 8554 --mount /stream1 --host 192.168.0.5\n", progname);
+    g_print("  %s --port 8554 --mount /stream1 --host 0.0.0.0\n", progname);
     g_print("  %s --width 1280 --height 800 --fps 30\n", progname);
     g_print("  %s --codec h264|h265  # camera mode only; H.264 by default\n", progname);
     g_print("  %s --mkv FILE         # auto-detect tracks from FILE in ./mkv_files\n", progname);
