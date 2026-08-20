@@ -6,17 +6,9 @@
 
 RtspServerApp::RtspServerApp(AppConfig config)
     : config_(std::move(config)),
+      clientTracker_(config_),
       mediaFactory_(config_)
 {
-}
-
-void RtspServerApp::onClientClosed(GstRTSPClient *client, gpointer userData)
-{
-    (void)userData;
-    GstRTSPConnection *connection = gst_rtsp_client_get_connection(client);
-    const gchar *ip = connection ? gst_rtsp_connection_get_ip(connection) : NULL;
-    g_print("RTSP client %p disconnected (ip=%s)\n",
-            static_cast<void *>(client), ip ? ip : "unknown");
 }
 
 void RtspServerApp::onClientConnected(GstRTSPServer *server,
@@ -25,11 +17,7 @@ void RtspServerApp::onClientConnected(GstRTSPServer *server,
 {
     (void)server;
     RtspServerApp *app = static_cast<RtspServerApp *>(userData);
-    GstRTSPConnection *connection = gst_rtsp_client_get_connection(client);
-    const gchar *ip = connection ? gst_rtsp_connection_get_ip(connection) : NULL;
-    g_print("RTSP client %p connected (ip=%s)\n",
-            static_cast<void *>(client), ip ? ip : "unknown");
-    g_signal_connect(client, "closed", G_CALLBACK(onClientClosed), app);
+    app->clientTracker_.attach(client);
 }
 
 int RtspServerApp::run()
@@ -58,12 +46,11 @@ int RtspServerApp::run()
     gst_rtsp_mount_points_add_factory(
         mounts.get(), config_.mountPath().c_str(), mediaFactory_.create(false));
 
-    if (config_.subStreamEnabled() && !config_.isMkvSource()) {
-        g_printerr("Warning: --sub is ignored in camera mode because the camera "
+    if (config_.secondaryStreamEnabled() && !config_.isMkvSource()) {
+        g_printerr("Warning: --sub-resize is ignored in camera mode because the camera "
                    "cannot be opened by two pipelines\n");
     }
-    const bool hasSecondaryStream =
-        config_.subStreamEnabled() && config_.isMkvSource() && config_.hasVideo();
+    const bool hasSecondaryStream = config_.secondaryStreamAvailable();
     if (hasSecondaryStream) {
         gst_rtsp_mount_points_add_factory(
             mounts.get(), config_.secondaryMountPath().c_str(),
@@ -109,14 +96,30 @@ void RtspServerApp::printEndpoints(bool hasSecondaryStream) const
     }
 
     if (hasSecondaryStream) {
-        g_print("RTSP %s reduced video %dx%d%s: rtsp://%s:%u%s\n",
-                config_.videoCodecName(),
-                config_.secondaryWidth(), config_.secondaryHeight(),
-                config_.streamMode() == StreamMode::Both ? "+audio" : "",
-                config_.host().c_str(), config_.port(),
-                config_.secondaryMountPath().c_str());
+        if (config_.hasSubMkvSource()) {
+            if (config_.subMkvHasVideo()) {
+                g_print("RTSP %s sub MKV video%s passthrough: rtsp://%s:%u%s\n",
+                        config_.subMkvVideoCodecName(),
+                        config_.subMkvHasAudio() ? "+audio" : "",
+                        config_.host().c_str(), config_.port(),
+                        config_.secondaryMountPath().c_str());
+            } else {
+                g_print("RTSP sub MKV audio only: rtsp://%s:%u%s\n",
+                        config_.host().c_str(), config_.port(),
+                        config_.secondaryMountPath().c_str());
+            }
+        } else {
+            g_print("RTSP %s reduced video %dx%d%s: rtsp://%s:%u%s\n",
+                    config_.videoCodecName(),
+                    config_.secondaryWidth(), config_.secondaryHeight(),
+                    config_.streamMode() == StreamMode::Both ? "+audio" : "",
+                    config_.host().c_str(), config_.port(),
+                    config_.secondaryMountPath().c_str());
+        }
     }
-    if (config_.hasVideo() && (!config_.isMkvSource() || hasSecondaryStream)) {
+    if (config_.hasVideo() &&
+        (!config_.isMkvSource() ||
+         (hasSecondaryStream && !config_.hasSubMkvSource()))) {
         g_print("Video encoder%s: %s\n",
                 config_.isMkvSource() ? " for reduced stream" : "",
                 config_.videoEncoderFactoryName());

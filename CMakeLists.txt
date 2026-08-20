@@ -19,6 +19,7 @@ add_executable(rtsp_server
     include/media/media_pipeline_builder.hpp
     include/media/mkv_pipeline_builder.hpp
     include/probe/mkv_probe.hpp
+    include/server/rtsp_client_tracker.hpp
     include/server/rtsp_server_app.hpp
     src/main.cpp
     src/config/app_config.cpp
@@ -28,6 +29,7 @@ add_executable(rtsp_server
     src/media/media_pipeline_builder.cpp
     src/media/mkv_pipeline_builder.cpp
     src/probe/mkv_probe.cpp
+    src/server/rtsp_client_tracker.cpp
     src/server/rtsp_server_app.cpp
 )
 

@@ -5,6 +5,7 @@
 #include "media/element_assembly.hpp"
 
 #include <cstring>
+#include <string>
 
 namespace {
 
@@ -12,6 +13,29 @@ struct MkvPadTargets {
     GstElement *videoQueue;
     GstElement *audioQueue;
 };
+
+struct MkvStreamSpec {
+    const std::string &path;
+    bool hasVideo;
+    bool hasAudio;
+    VideoCodec videoCodec;
+    bool videoPassthrough;
+};
+
+const char *codecName(VideoCodec codec)
+{
+    return codec == VideoCodec::H265 ? "h265" : "h264";
+}
+
+const char *parserForCodec(VideoCodec codec)
+{
+    return codec == VideoCodec::H265 ? "h265parse" : "h264parse";
+}
+
+const char *payloaderForCodec(VideoCodec codec)
+{
+    return codec == VideoCodec::H265 ? "rtph265pay" : "rtph264pay";
+}
 
 void onMkvPadAdded(GstElement *decodebin, GstPad *sourcePad, gpointer userData)
 {
@@ -57,14 +81,28 @@ MkvPipelineBuilder::MkvPipelineBuilder(const AppConfig &config)
 
 GstElement *MkvPipelineBuilder::build(bool reducedResolution) const
 {
+    const bool useSeparateSubMkv =
+        reducedResolution && config().hasSubMkvSource();
+    const MkvStreamSpec stream = useSeparateSubMkv
+        ? MkvStreamSpec{config().subMkvPath(),
+                        config().subMkvHasVideo(),
+                        config().subMkvHasAudio(),
+                        config().subMkvVideoCodec(),
+                        true}
+        : MkvStreamSpec{config().mkvPath(),
+                        config().hasVideo(),
+                        config().hasAudio(),
+                        config().videoCodec(),
+                        !reducedResolution};
+
     ElementAssembly pipeline("mkv_media_bin");
     GstElement *decodebin = pipeline.make("uridecodebin", "mkv_decoder0");
     GError *uriError = NULL;
-    GCharPtr uri(gst_filename_to_uri(config().mkvPath().c_str(), &uriError));
+    GCharPtr uri(gst_filename_to_uri(stream.path.c_str(), &uriError));
 
     if (!pipeline.valid() || !decodebin || !uri) {
         g_printerr("Failed to create MKV source for %s%s%s\n",
-                   config().mkvPath().c_str(),
+                   stream.path.c_str(),
                    uriError ? ": " : "",
                    uriError ? uriError->message : "");
         if (uriError) {
@@ -78,9 +116,9 @@ GstElement *MkvPipelineBuilder::build(bool reducedResolution) const
 
     g_object_set(decodebin, "uri", uri.get(), NULL);
     GstCapsPtr decodeCaps(gst_caps_from_string(
-        reducedResolution
-            ? "video/x-raw; audio/x-raw"
-            : "video/x-h264; video/x-h265; audio/x-raw"));
+        stream.videoPassthrough
+            ? "video/x-h264; video/x-h265; audio/x-raw"
+            : "video/x-raw; audio/x-raw"));
     g_object_set(decodebin, "caps", decodeCaps.get(), NULL);
     if (!pipeline.add({decodebin})) {
         g_printerr("Failed to add MKV decoder to media bin\n");
@@ -90,15 +128,18 @@ GstElement *MkvPipelineBuilder::build(bool reducedResolution) const
     MkvPadTargets *targets = g_new0(MkvPadTargets, 1);
     g_object_set_data_full(G_OBJECT(decodebin), "mkv-pad-targets", targets, g_free);
 
-    if (config().hasVideo()) {
+    if (stream.hasVideo) {
         GstElement *queue = pipeline.make("queue", "mkv_video_queue");
-        GstElement *parser = pipeline.make(parserFactoryName(), "mkv_video_parser0");
-        GstElement *pay = pipeline.make(payloaderFactoryName(), "pay0");
+        GstElement *parser =
+            pipeline.make(parserForCodec(stream.videoCodec), "mkv_video_parser0");
+        GstElement *pay =
+            pipeline.make(payloaderForCodec(stream.videoCodec), "pay0");
 
         if (!queue || !parser || !pay) {
             g_printerr("Failed to create MKV %s passthrough elements (%s, %s)\n",
-                       config().videoCodecName(),
-                       parserFactoryName(), payloaderFactoryName());
+                       codecName(stream.videoCodec),
+                       parserForCodec(stream.videoCodec),
+                       payloaderForCodec(stream.videoCodec));
             return NULL;
         }
         g_object_set(pay,
@@ -106,7 +147,7 @@ GstElement *MkvPipelineBuilder::build(bool reducedResolution) const
                      "config-interval", 1,
                      NULL);
 
-        if (reducedResolution) {
+        if (!stream.videoPassthrough) {
             GstElement *convert =
                 pipeline.make("videoconvert", "mkv_low_videoconvert0");
             GstElement *scale =
@@ -138,22 +179,22 @@ GstElement *MkvPipelineBuilder::build(bool reducedResolution) const
                 !gst_element_link_many(queue, convert, scale, capsFilter,
                                        encoder, parser, pay, NULL)) {
                 g_printerr("Failed to assemble reduced MKV %s video chain\n",
-                           config().videoCodecName());
+                           codecName(stream.videoCodec));
                 return NULL;
             }
         } else {
             if (!pipeline.add({queue, parser, pay}) ||
                 !gst_element_link_many(queue, parser, pay, NULL)) {
                 g_printerr("Failed to assemble MKV %s passthrough chain\n",
-                           config().videoCodecName());
+                           codecName(stream.videoCodec));
                 return NULL;
             }
         }
         targets->videoQueue = queue;
     }
 
-    if (config().hasAudio()) {
-        const char *audioPayName = config().hasVideo() ? "pay1" : "pay0";
+    if (stream.hasAudio) {
+        const char *audioPayName = stream.hasVideo ? "pay1" : "pay0";
         GstElement *queue = pipeline.make("queue", "mkv_audio_queue");
         GstElement *convert =
             pipeline.make("audioconvert", "mkv_audioconvert0");

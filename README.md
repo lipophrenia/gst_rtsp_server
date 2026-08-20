@@ -134,7 +134,7 @@ sudo ./build/rtsp_server --mkv 1000_55_60.mkv
 ## Основной и уменьшенный потоки
 
 По умолчанию сервер создаёт только основной mount point `/stream`. Для источника MKV
-дополнительный уменьшенный поток включается флагом `--sub`:
+дополнительный уменьшенный поток включается флагом `--sub-resize`:
 
 - `/stream` — основной поток в исходном разрешении;
 - `/stream-low` — дополнительный поток с видео, уменьшенным до `640×360`.
@@ -144,16 +144,27 @@ sudo ./build/rtsp_server --mkv 1000_55_60.mkv
 H.264 или H.265. По умолчанию используется `x264enc`/`x265enc`; с `--mpp` —
 `mpph264enc`/`mpph265enc`.
 
-Для камеры всегда создаётся только основной mount point. Флаг `--sub` в camera-режиме
+Для камеры всегда создаётся только основной mount point. Флаг `--sub-resize` в camera-режиме
 игнорируется, поскольку два независимых пайплайна не могут одновременно открыть одно
 устройство V4L2. Для двух camera-потоков понадобился бы отдельный общий пайплайн с
 `tee`, которого в текущей схеме сервера нет.
+
+Вместо ресайза можно назначить второму маунту отдельный MKV-файл:
+
+```sh
+./runapp.sh mkv 0391_53_50.mkv --sub-mkv 1000_55_60.mkv
+```
+
+`--sub-mkv` автоматически включает второй маунт. Второй файл анализируется независимо:
+он может использовать другой видеокодек H.264/H.265 и другой состав дорожек. Видео
+передаётся passthrough без декодирования, изменения разрешения и повторного кодирования.
+Обработка аудио остаётся такой же, как для основного MKV-потока.
 
 Пути и разрешение второго потока можно изменить:
 
 ```sh
 ./runapp.sh mkv 1000_55_60.mkv \
-  --sub \
+  --sub-resize \
   --mount /stream \
   --secondary-mount /preview \
   --secondary-width 640 \
@@ -194,20 +205,29 @@ GST_DEBUG='rtsp*:6,matroska*:5,*:3' ./runapp.sh mkv 0391_53_50.mkv
 sudo GST_DEBUG=3 ./build/rtsp_server --mkv 1000_55_60.mkv --tcp-only
 ```
 
+При подключении сервер определяет mount point из RTSP-запроса и сохраняет его до
+закрытия соединения:
+
+```text
+RTSP client 0x... selected mount=/stream (ip=127.0.0.1, request=/stream)
+RTSP client 0x... disconnected (ip=127.0.0.1, mount=/stream)
+```
+
 ## Параметры сервера
 
 ```text
 --port PORT                 RTSP-порт, по умолчанию 8554
 --mount PATH                RTSP mount path, по умолчанию /stream
---sub                       включить дополнительный уменьшенный MKV-поток
---secondary-mount PATH      mount path уменьшенного потока, по умолчанию /stream-low
+--sub-resize                включить дополнительный MKV-поток с ресайзом
+--sub-mkv FILE              отдельный MKV passthrough для второго mount point
+--secondary-mount PATH      mount path дополнительного потока, по умолчанию /stream-low
 --host HOST                 адрес, отображаемый в строке RTSP URL
 --video-device DEVICE       устройство V4L2
 --audio-device DEVICE       устройство ALSA
 --width WIDTH               ширина видео с камеры
 --height HEIGHT             высота видео с камеры
---secondary-width WIDTH     ширина уменьшенного потока, по умолчанию 640
---secondary-height HEIGHT   высота уменьшенного потока, по умолчанию 360
+--secondary-width WIDTH     ширина resize-потока, по умолчанию 640
+--secondary-height HEIGHT   высота resize-потока, по умолчанию 360
 --fps FPS                   частота кадров камеры
 --codec h264|h265           кодек режима камеры
 --mpp                       использовать аппаратный MPP-энкодер вместо x264enc/x265enc
@@ -229,7 +249,7 @@ sudo GST_DEBUG=3 ./build/rtsp_server --mkv 1000_55_60.mkv --tcp-only
 rtsp://0.0.0.0:8554/stream
 ```
 
-Для MKV с флагом `--sub` дополнительно доступен:
+Для MKV с флагом `--sub-resize` дополнительно доступен:
 
 ```text
 rtsp://0.0.0.0:8554/stream-low

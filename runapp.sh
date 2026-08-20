@@ -18,7 +18,8 @@ Examples:
   $0 h264 --mpp
   $0 mkv 1000_55_60.mkv
   $0 mkv 0391_53_50.mkv --port 8555
-  $0 mkv 1000_55_60.mkv --sub --secondary-mount /preview --secondary-width 640 --secondary-height 360
+  $0 mkv 1000_55_60.mkv --sub-resize --secondary-mount /preview --secondary-width 640 --secondary-height 360
+  $0 mkv 0391_53_50.mkv --sub-mkv 1000_55_60.mkv
 EOF
 }
 

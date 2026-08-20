@@ -20,6 +20,17 @@ int main(int argc, char *argv[])
         }
         config.applyMkvMediaInfo(
             mediaInfo.hasVideo(), mediaInfo.hasAudio(), mediaInfo.videoCodec());
+
+        if (config.hasSubMkvSource()) {
+            MkvMediaInfo subMediaInfo;
+            if (!probe.inspect(config.subMkvPath(), subMediaInfo)) {
+                return 1;
+            }
+            config.applySubMkvMediaInfo(
+                subMediaInfo.hasVideo(),
+                subMediaInfo.hasAudio(),
+                subMediaInfo.videoCodec());
+        }
     }
     if (config.quietRtspClientLogs()) {
         gst_debug_set_threshold_for_name("rtspclient", GST_LEVEL_NONE);

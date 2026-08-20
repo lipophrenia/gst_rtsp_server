@@ -21,6 +21,20 @@ bool AppConfig::hasAudio() const
     return streamMode_ == StreamMode::Audio || streamMode_ == StreamMode::Both;
 }
 
+bool AppConfig::hasSubMkvSource() const { return !subMkvPath_.empty(); }
+bool AppConfig::subMkvHasVideo() const { return subMkvHasVideo_; }
+bool AppConfig::subMkvHasAudio() const { return subMkvHasAudio_; }
+
+bool AppConfig::secondaryStreamAvailable() const
+{
+    if (!secondaryStreamEnabled_ || !isMkvSource()) {
+        return false;
+    }
+    return hasSubMkvSource()
+               ? (subMkvHasVideo_ || subMkvHasAudio_)
+               : hasVideo();
+}
+
 void AppConfig::applyMkvMediaInfo(bool hasVideo, bool hasAudio, VideoCodec codec)
 {
     if (hasVideo) {
@@ -31,14 +45,25 @@ void AppConfig::applyMkvMediaInfo(bool hasVideo, bool hasAudio, VideoCodec codec
                       : (hasVideo ? StreamMode::Video : StreamMode::Audio);
 }
 
+void AppConfig::applySubMkvMediaInfo(bool hasVideo, bool hasAudio, VideoCodec codec)
+{
+    subMkvHasVideo_ = hasVideo;
+    subMkvHasAudio_ = hasAudio;
+    if (hasVideo) {
+        subMkvVideoCodec_ = codec;
+    }
+}
+
 StreamMode AppConfig::streamMode() const { return streamMode_; }
 VideoCodec AppConfig::videoCodec() const { return videoCodec_; }
+VideoCodec AppConfig::subMkvVideoCodec() const { return subMkvVideoCodec_; }
 const std::string &AppConfig::host() const { return host_; }
 const std::string &AppConfig::mountPath() const { return mountPath_; }
 const std::string &AppConfig::secondaryMountPath() const { return secondaryMountPath_; }
 const std::string &AppConfig::videoDevice() const { return videoDevice_; }
 const std::string &AppConfig::audioDevice() const { return audioDevice_; }
 const std::string &AppConfig::mkvPath() const { return mkvPath_; }
+const std::string &AppConfig::subMkvPath() const { return subMkvPath_; }
 unsigned int AppConfig::port() const { return port_; }
 int AppConfig::videoWidth() const { return videoWidth_; }
 int AppConfig::videoHeight() const { return videoHeight_; }
@@ -51,7 +76,7 @@ bool AppConfig::lowLatency() const { return lowLatency_; }
 bool AppConfig::quietRtspClientLogs() const { return quietRtspClientLogs_; }
 bool AppConfig::tcpOnly() const { return tcpOnly_; }
 bool AppConfig::useMpp() const { return useMpp_; }
-bool AppConfig::subStreamEnabled() const { return subStreamEnabled_; }
+bool AppConfig::secondaryStreamEnabled() const { return secondaryStreamEnabled_; }
 
 const char *AppConfig::videoCodecName() const
 {
@@ -69,6 +94,11 @@ const char *AppConfig::videoEncoderFactoryName() const
 const char *AppConfig::videoEncoderRawFormat() const
 {
     return useMpp_ ? "NV12" : "I420";
+}
+
+const char *AppConfig::subMkvVideoCodecName() const
+{
+    return subMkvVideoCodec_ == VideoCodec::H265 ? "h265" : "h264";
 }
 
 bool AppConfig::parseInt(const char *value, int minValue, int maxValue, int &result)
@@ -155,17 +185,19 @@ void AppConfig::printUsage(const char *programName)
     g_print("  %s --video            # video only\n", programName);
     g_print("  %s --audio            # audio only\n", programName);
     g_print("  %s --port 8554 --mount /stream1 --host 0.0.0.0\n", programName);
-    g_print("  %s --sub --secondary-mount /stream-low --secondary-width 640 --secondary-height 360\n",
+    g_print("  %s --sub-resize --secondary-mount /stream-low --secondary-width 640 --secondary-height 360\n",
             programName);
     g_print("  %s --width 1280 --height 800 --fps 30\n", programName);
     g_print("  %s --codec h264|h265  # camera mode only; H.264 by default\n", programName);
     g_print("  %s --mpp              # force mpph264enc/mpph265enc instead of x264enc/x265enc\n",
             programName);
     g_print("  %s --mkv FILE         # auto-detect tracks from FILE in ./mkv_files\n", programName);
+    g_print("  %s --mkv FILE --sub-mkv FILE  # use a second MKV as passthrough sub stream\n",
+            programName);
     g_print("  %s --mkv 0391_53_50.mkv\n", programName);
     g_print("  %s --video-device /dev/video0 --audio-device plughw:CARD=...,DEV=0\n",
             programName);
-    g_print("  %s --sub              # enable the reduced secondary MKV stream\n", programName);
+    g_print("  %s --sub-resize       # enable the resized secondary MKV stream\n", programName);
     g_print("  %s --low-latency|--no-low-latency\n", programName);
     g_print("  %s --tcp-only         # allow RTP over RTSP/TCP only\n", programName);
     g_print("  %s --quiet-rtspclient-logs\n", programName);
@@ -216,6 +248,16 @@ void AppConfig::parse(int argc, char *argv[])
             if (mkvPath_.empty()) {
                 std::exit(1);
             }
+        } else if (std::strcmp(argv[i], "--sub-mkv") == 0) {
+            if (i + 1 >= argc) {
+                g_printerr("Missing --sub-mkv value\n");
+                std::exit(1);
+            }
+            subMkvPath_ = resolveMkvPath(argv[++i]);
+            if (subMkvPath_.empty()) {
+                std::exit(1);
+            }
+            secondaryStreamEnabled_ = true;
         } else if (std::strcmp(argv[i], "--codec") == 0) {
             if (i + 1 >= argc) {
                 g_printerr("Missing --codec value (expected h264 or h265)\n");
@@ -280,8 +322,8 @@ void AppConfig::parse(int argc, char *argv[])
             tcpOnly_ = true;
         } else if (std::strcmp(argv[i], "--mpp") == 0) {
             useMpp_ = true;
-        } else if (std::strcmp(argv[i], "--sub") == 0) {
-            subStreamEnabled_ = true;
+        } else if (std::strcmp(argv[i], "--sub-resize") == 0) {
+            secondaryStreamEnabled_ = true;
         } else if (std::strcmp(argv[i], "--quiet-rtspclient-logs") == 0) {
             quietRtspClientLogs_ = true;
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
@@ -294,7 +336,11 @@ void AppConfig::parse(int argc, char *argv[])
         }
     }
 
-    if (subStreamEnabled_ && isMkvSource() && mountPath_ == secondaryMountPath_) {
+    if (hasSubMkvSource() && !isMkvSource()) {
+        g_printerr("--sub-mkv requires a primary --mkv source\n");
+        std::exit(1);
+    }
+    if (secondaryStreamEnabled_ && isMkvSource() && mountPath_ == secondaryMountPath_) {
         g_printerr("--mount and --secondary-mount must be different\n");
         std::exit(1);
     }
