@@ -5,7 +5,10 @@ RTSP-сервер на GStreamer поддерживает два источни�
 - камеру V4L2 и ALSA-аудиоустройство;
 - MKV-файл из каталога `mkv_files`.
 
-В режиме камеры видео аппаратно кодируется в H.264 или H.265 через [gstreamer-rockchip plugins](https://github.com/CUITzhaoqi/mirrors/tree/gstreamer-rockchip). Для их работы необходим [rockchip-mpp](https://github.com/rockchip-linux/mpp).
+По умолчанию видео кодируется программно через `x264enc` или `x265enc`.
+Флаг `--mpp` включает аппаратные `mpph264enc`/`mpph265enc` из
+[gstreamer-rockchip plugins](https://github.com/CUITzhaoqi/mirrors/tree/gstreamer-rockchip).
+Для них необходим [rockchip-mpp](https://github.com/rockchip-linux/mpp).
 В режиме MKV видеодорожка не декодируется и не перекодируется: исходный H.264/H.265
 передаётся через соответствующий RTP payloader. Наличие видео и аудио в MKV
 определяется автоматически. Аудиодорожка, если она есть, публикуется как PCMA 8 кГц mono.
@@ -17,7 +20,8 @@ RTSP-сервер на GStreamer поддерживает два источни�
 - `v4l2src` — захват видео с V4L2-устройства;
 - `capsfilter` — установка разрешения и частоты кадров;
 - `queue` — буферизация видеодорожки;
-- `mpph264enc` или `mpph265enc` — аппаратное кодирование через MPP;
+- `x264enc` или `x265enc` — программное кодирование по умолчанию;
+- `mpph264enc` или `mpph265enc` — аппаратное кодирование при запуске с `--mpp`;
 - `h264parse` или `h265parse` — разбор кодированного видеопотока;
 - `rtph264pay` или `rtph265pay` — упаковка видео в RTP.
 
@@ -30,7 +34,10 @@ RTSP-сервер на GStreamer поддерживает два источни�
 - `h264parse` и `rtph264pay` — для исходного H.264;
 - `h265parse` и `rtph265pay` — для исходного H.265.
 
-Элементы декодирования видео, `videoconvert` и MPP-энкодер в MKV-режиме не используются.
+В основном MKV mount point элементы декодирования видео, `videoconvert` и MPP-энкодер
+не используются. Для уменьшенного mount point видеодорожка декодируется, проходит через
+`videoconvert`, `videoscale` и `capsfilter`, после чего повторно кодируется через
+`x264enc`/`x265enc` либо через MPP-энкодер при наличии `--mpp`.
 
 ### Элементы GStreamer для аудио
 
@@ -68,6 +75,13 @@ H.264 используется по умолчанию:
 
 ```sh
 ./runapp.sh h265
+```
+
+Для аппаратного MPP-кодирования добавьте `--mpp`:
+
+```sh
+./runapp.sh h264 --mpp
+./runapp.sh h265 --mpp
 ```
 
 Эквивалентный запуск без скрипта:
@@ -117,6 +131,35 @@ sudo ./build/rtsp_server --mkv 1000_55_60.mkv
 поддерживаются видеодорожки H.264 и H.265. Воспроизведение завершается при достижении
 конца файла.
 
+## Основной и уменьшенный потоки
+
+При наличии видео сервер создаёт два mount point:
+
+- `/stream` — основной поток в исходном разрешении;
+- `/stream-low` — тот же поток с видео, уменьшенным до `640×360`.
+
+Аудиодорожка публикуется в обоих потоках. Для MKV основной поток остаётся passthrough,
+а уменьшенный поток декодируется, масштабируется и повторно кодируется в исходный
+H.264 или H.265. По умолчанию используется `x264enc`/`x265enc`; с `--mpp` —
+`mpph264enc`/`mpph265enc`.
+
+Пути и разрешение второго потока можно изменить:
+
+```sh
+./runapp.sh mkv 1000_55_60.mkv \
+  --mount /stream \
+  --secondary-mount /preview \
+  --secondary-width 640 \
+  --secondary-height 360
+```
+
+Получившиеся адреса:
+
+```text
+rtsp://HOST:8554/stream
+rtsp://HOST:8554/preview
+```
+
 ## Отладочный запуск
 
 `runapp_debug.sh` принимает те же параметры, что и `runapp.sh`, и запускает сервер
@@ -149,13 +192,17 @@ sudo GST_DEBUG=3 ./build/rtsp_server --mkv 1000_55_60.mkv --tcp-only
 ```text
 --port PORT                 RTSP-порт, по умолчанию 8554
 --mount PATH                RTSP mount path, по умолчанию /stream
+--secondary-mount PATH      mount path уменьшенного потока, по умолчанию /stream-low
 --host HOST                 адрес, отображаемый в строке RTSP URL
 --video-device DEVICE       устройство V4L2
 --audio-device DEVICE       устройство ALSA
 --width WIDTH               ширина видео с камеры
 --height HEIGHT             высота видео с камеры
+--secondary-width WIDTH     ширина уменьшенного потока, по умолчанию 640
+--secondary-height HEIGHT   высота уменьшенного потока, по умолчанию 360
 --fps FPS                   частота кадров камеры
 --codec h264|h265           кодек режима камеры
+--mpp                       использовать аппаратный MPP-энкодер вместо x264enc/x265enc
 --mkv FILE                  MKV-файл из каталога mkv_files
 --video                     только видео с камеры
 --audio                     только аудио с устройства ALSA
@@ -172,4 +219,5 @@ sudo GST_DEBUG=3 ./build/rtsp_server --mkv 1000_55_60.mkv --tcp-only
 
 ```text
 rtsp://0.0.0.0:8554/stream
+rtsp://0.0.0.0:8554/stream-low
 ```

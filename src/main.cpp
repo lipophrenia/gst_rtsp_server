@@ -21,17 +21,21 @@ static StreamMode g_mode = MODE_BOTH;
 static VideoCodec g_video_codec = VIDEO_CODEC_H264;
 static const char *g_host = "0.0.0.0";
 static const char *g_mount_path = "/stream";
+static const char *g_secondary_mount_path = "/stream-low";
 static const char *g_video_device = "/dev/video0";
 static const char *g_audio_device = "plughw:CARD=rockchipes8388,DEV=0";
 static guint g_port = 8554;
 static gint g_video_width = 1280;
 static gint g_video_height = 800;
 static gint g_video_fps = 30;
+static gint g_secondary_width = 640;
+static gint g_secondary_height = 360;
 static gboolean g_low_latency = TRUE;
 static guint g_video_pt = 96;
 static guint g_audio_pt = 8;
 static gboolean g_quiet_rtspclient_logs = FALSE;
 static gboolean g_tcp_only = FALSE;
+static gboolean g_use_mpp = FALSE;
 static gchar *g_mkv_path = NULL;
 static gboolean g_mkv_has_video = FALSE;
 static gboolean g_mkv_has_audio = FALSE;
@@ -39,6 +43,30 @@ static gboolean g_mkv_has_audio = FALSE;
 static const char *video_codec_name(void)
 {
     return g_video_codec == VIDEO_CODEC_H265 ? "h265" : "h264";
+}
+
+static const char *video_encoder_factory_name(void)
+{
+    if (g_use_mpp) {
+        return g_video_codec == VIDEO_CODEC_H265 ? "mpph265enc" : "mpph264enc";
+    }
+    return g_video_codec == VIDEO_CODEC_H265 ? "x265enc" : "x264enc";
+}
+
+static const char *video_encoder_raw_format(void)
+{
+    return g_use_mpp ? "NV12" : "I420";
+}
+
+static void configure_video_encoder(GstElement *encoder)
+{
+    if (!g_use_mpp && g_low_latency) {
+        g_object_set(encoder,
+                     "speed-preset", 1,
+                     "tune", 4,
+                     "key-int-max", g_video_fps,
+                     NULL);
+    }
 }
 
 typedef struct {
@@ -269,6 +297,7 @@ static void on_client_connected(GstRTSPServer *server, GstRTSPClient *client, gp
 
 typedef struct _MyFactory {
     GstRTSPMediaFactory parent;
+    gboolean reduced_resolution;
 } MyFactory;
 
 typedef struct _MyFactoryClass {
@@ -301,7 +330,8 @@ static void on_mkv_pad_added(GstElement *decodebin, GstPad *src_pad, gpointer us
     const gchar *media_type = gst_structure_get_name(structure);
     GstElement *target = NULL;
 
-    if (strcmp(media_type, "video/x-h264") == 0 ||
+    if (g_str_has_prefix(media_type, "video/x-raw") ||
+        strcmp(media_type, "video/x-h264") == 0 ||
         strcmp(media_type, "video/x-h265") == 0) {
         target = targets->video_queue;
     } else if (g_str_has_prefix(media_type, "audio/x-raw")) {
@@ -323,7 +353,7 @@ static void on_mkv_pad_added(GstElement *decodebin, GstPad *src_pad, gpointer us
     gst_caps_unref(caps);
 }
 
-static GstElement *create_mkv_element(void)
+static GstElement *create_mkv_element(gboolean reduced_resolution)
 {
     GstElement *bin = gst_bin_new("mkv_media_bin");
     GstElement *decodebin = gst_element_factory_make("uridecodebin", "mkv_decoder0");
@@ -347,7 +377,10 @@ static GstElement *create_mkv_element(void)
     }
 
     g_object_set(decodebin, "uri", uri, NULL);
-    GstCaps *decode_caps = gst_caps_from_string("video/x-h264; video/x-h265; audio/x-raw");
+    GstCaps *decode_caps = gst_caps_from_string(
+        reduced_resolution
+            ? "video/x-raw; audio/x-raw"
+            : "video/x-h264; video/x-h265; audio/x-raw");
     g_object_set(decodebin, "caps", decode_caps, NULL);
     gst_caps_unref(decode_caps);
     g_free(uri);
@@ -373,11 +406,45 @@ static GstElement *create_mkv_element(void)
 
         g_object_set(pay, "pt", g_video_pt, "config-interval", 1, NULL);
 
-        gst_bin_add_many(GST_BIN(bin), queue, parser, pay, NULL);
-        if (!gst_element_link_many(queue, parser, pay, NULL)) {
-            g_printerr("Failed to link MKV %s passthrough chain\n", video_codec_name());
-            gst_object_unref(bin);
-            return NULL;
+        if (reduced_resolution) {
+            const char *encoder_factory = video_encoder_factory_name();
+            GstElement *convert = gst_element_factory_make("videoconvert", "mkv_low_videoconvert0");
+            GstElement *scale = gst_element_factory_make("videoscale", "mkv_low_videoscale0");
+            GstElement *capsfilter = gst_element_factory_make("capsfilter", "mkv_low_video_caps");
+            GstElement *encoder = gst_element_factory_make(encoder_factory, "mkv_low_video_encoder0");
+
+            if (!convert || !scale || !capsfilter || !encoder) {
+                g_printerr("Failed to create reduced MKV video elements (%s)\n", encoder_factory);
+                gst_object_unref(bin);
+                return NULL;
+            }
+
+            GstCaps *caps = gst_caps_new_simple("video/x-raw",
+                                                "format", G_TYPE_STRING, video_encoder_raw_format(),
+                                                "width", G_TYPE_INT, g_secondary_width,
+                                                "height", G_TYPE_INT, g_secondary_height,
+                                                NULL);
+            g_object_set(scale, "add-borders", TRUE, NULL);
+            g_object_set(capsfilter, "caps", caps, NULL);
+            configure_video_encoder(encoder);
+            gst_caps_unref(caps);
+
+            gst_bin_add_many(GST_BIN(bin),
+                             queue, convert, scale, capsfilter, encoder, parser, pay,
+                             NULL);
+            if (!gst_element_link_many(
+                    queue, convert, scale, capsfilter, encoder, parser, pay, NULL)) {
+                g_printerr("Failed to link reduced MKV %s video chain\n", video_codec_name());
+                gst_object_unref(bin);
+                return NULL;
+            }
+        } else {
+            gst_bin_add_many(GST_BIN(bin), queue, parser, pay, NULL);
+            if (!gst_element_link_many(queue, parser, pay, NULL)) {
+                g_printerr("Failed to link MKV %s passthrough chain\n", video_codec_name());
+                gst_object_unref(bin);
+                return NULL;
+            }
         }
         targets->video_queue = queue;
     }
@@ -421,11 +488,11 @@ static GstElement *create_mkv_element(void)
 
 static GstElement *my_factory_create_element(GstRTSPMediaFactory *factory, const GstRTSPUrl *url)
 {
-    (void)factory;
     (void)url;
+    gboolean reduced_resolution = ((MyFactory *)factory)->reduced_resolution;
 
     if (g_mkv_path) {
-        return create_mkv_element();
+        return create_mkv_element(reduced_resolution);
     }
 
     GstElement *bin = gst_bin_new("media_bin");
@@ -436,17 +503,29 @@ static GstElement *my_factory_create_element(GstRTSPMediaFactory *factory, const
 
     /* ---------- VIDEO ---------- */
     if (g_mode == MODE_VIDEO || g_mode == MODE_BOTH) {
-        const char *encoder_factory = g_video_codec == VIDEO_CODEC_H265 ? "mpph265enc" : "mpph264enc";
+        const char *encoder_factory = video_encoder_factory_name();
         const char *parser_factory = g_video_codec == VIDEO_CODEC_H265 ? "h265parse" : "h264parse";
         const char *payloader_factory = g_video_codec == VIDEO_CODEC_H265 ? "rtph265pay" : "rtph264pay";
+        gboolean needs_convert = reduced_resolution || !g_use_mpp;
         GstElement *v4l2src   = gst_element_factory_make("v4l2src", "v4l2src0");
         GstElement *v_capsf   = gst_element_factory_make("capsfilter", "v_caps");
         GstElement *v_queue   = gst_element_factory_make("queue", "v_queue");
+        GstElement *v_convert = needs_convert
+                                    ? gst_element_factory_make("videoconvert", "video_convert0")
+                                    : NULL;
+        GstElement *v_scale   = reduced_resolution
+                                    ? gst_element_factory_make("videoscale", "low_videoscale0")
+                                    : NULL;
+        GstElement *v_low_capsf = reduced_resolution
+                                      ? gst_element_factory_make("capsfilter", "low_video_caps")
+                                      : NULL;
         GstElement *encoder   = gst_element_factory_make(encoder_factory, "video_encoder0");
         GstElement *parser    = gst_element_factory_make(parser_factory, "video_parser0");
         GstElement *pay_video = gst_element_factory_make(payloader_factory, "pay0");
 
-        if (!v4l2src || !v_capsf || !v_queue || !encoder || !parser || !pay_video) {
+        if (!v4l2src || !v_capsf || !v_queue || !encoder || !parser || !pay_video ||
+            (needs_convert && !v_convert) ||
+            (reduced_resolution && (!v_scale || !v_low_capsf))) {
             g_printerr("Failed to create %s video elements (%s, %s, %s)\n",
                        video_codec_name(), encoder_factory, parser_factory, payloader_factory);
             gst_object_unref(bin);
@@ -466,6 +545,18 @@ static GstElement *my_factory_create_element(GstRTSPMediaFactory *factory, const
                      NULL);
         g_object_set(v_capsf, "caps", v_caps, NULL);
         g_object_set(pay_video, "pt", g_video_pt, "config-interval", 1, NULL);
+        configure_video_encoder(encoder);
+
+        if (reduced_resolution) {
+            GstCaps *low_caps = gst_caps_new_simple("video/x-raw",
+                                                    "format", G_TYPE_STRING, video_encoder_raw_format(),
+                                                    "width", G_TYPE_INT, g_secondary_width,
+                                                    "height", G_TYPE_INT, g_secondary_height,
+                                                    NULL);
+            g_object_set(v_scale, "add-borders", TRUE, NULL);
+            g_object_set(v_low_capsf, "caps", low_caps, NULL);
+            gst_caps_unref(low_caps);
+        }
 
         if (g_low_latency) {
             g_object_set(v_queue,
@@ -478,14 +569,37 @@ static GstElement *my_factory_create_element(GstRTSPMediaFactory *factory, const
 
         gst_caps_unref(v_caps);
 
-        gst_bin_add_many(GST_BIN(bin),
-                         v4l2src, v_capsf, v_queue, encoder, parser, pay_video,
-                         NULL);
-
-        if (!gst_element_link_many(v4l2src, v_capsf, v_queue, encoder, parser, pay_video, NULL)) {
-            g_printerr("Failed to link %s video chain\n", video_codec_name());
-            gst_object_unref(bin);
-            return NULL;
+        if (reduced_resolution) {
+            gst_bin_add_many(GST_BIN(bin),
+                             v4l2src, v_capsf, v_queue, v_convert, v_scale, v_low_capsf,
+                             encoder, parser, pay_video, NULL);
+            if (!gst_element_link_many(v4l2src, v_capsf, v_queue,
+                                       v_convert, v_scale, v_low_capsf,
+                                       encoder, parser, pay_video, NULL)) {
+                g_printerr("Failed to link reduced %s camera video chain\n", video_codec_name());
+                gst_object_unref(bin);
+                return NULL;
+            }
+        } else {
+            if (needs_convert) {
+                gst_bin_add_many(GST_BIN(bin),
+                                 v4l2src, v_capsf, v_queue, v_convert,
+                                 encoder, parser, pay_video, NULL);
+            } else {
+                gst_bin_add_many(GST_BIN(bin),
+                                 v4l2src, v_capsf, v_queue,
+                                 encoder, parser, pay_video, NULL);
+            }
+            gboolean linked = needs_convert
+                                  ? gst_element_link_many(v4l2src, v_capsf, v_queue, v_convert,
+                                                          encoder, parser, pay_video, NULL)
+                                  : gst_element_link_many(v4l2src, v_capsf, v_queue,
+                                                          encoder, parser, pay_video, NULL);
+            if (!linked) {
+                g_printerr("Failed to link %s video chain\n", video_codec_name());
+                gst_object_unref(bin);
+                return NULL;
+            }
         }
     }
 
@@ -557,7 +671,7 @@ static void my_factory_class_init(MyFactoryClass *klass)
 
 static void my_factory_init(MyFactory *self)
 {
-    (void)self;
+    self->reduced_resolution = FALSE;
 }
 
 /* ---------- Helpers ---------- */
@@ -570,8 +684,12 @@ static void print_usage(const char *progname)
     g_print("  %s --video            # video only\n", progname);
     g_print("  %s --audio            # audio only\n", progname);
     g_print("  %s --port 8554 --mount /stream1 --host 0.0.0.0\n", progname);
+    g_print("  %s --secondary-mount /stream-low --secondary-width 640 --secondary-height 360\n",
+            progname);
     g_print("  %s --width 1280 --height 800 --fps 30\n", progname);
     g_print("  %s --codec h264|h265  # camera mode only; H.264 by default\n", progname);
+    g_print("  %s --mpp              # force mpph264enc/mpph265enc instead of x264enc/x265enc\n",
+            progname);
     g_print("  %s --mkv FILE         # auto-detect tracks from FILE in ./mkv_files\n", progname);
     g_print("  %s --mkv 0391_53_50.mkv\n", progname);
     g_print("  %s --video-device /dev/video0 --audio-device plughw:CARD=...,DEV=0\n", progname);
@@ -651,6 +769,12 @@ static void parse_args(int argc, char *argv[])
                 g_printerr("--mount must start with '/'\n");
                 exit(1);
             }
+        } else if (strcmp(argv[i], "--secondary-mount") == 0 && i + 1 < argc) {
+            g_secondary_mount_path = argv[++i];
+            if (g_secondary_mount_path[0] != '/') {
+                g_printerr("--secondary-mount must start with '/'\n");
+                exit(1);
+            }
         } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
             g_host = argv[++i];
         } else if (strcmp(argv[i], "--video-device") == 0 && i + 1 < argc) {
@@ -693,6 +817,18 @@ static void parse_args(int argc, char *argv[])
                 exit(1);
             }
             g_video_height = tmp_i;
+        } else if (strcmp(argv[i], "--secondary-width") == 0 && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], 16, 8192, &tmp_i)) {
+                g_printerr("Invalid --secondary-width value\n");
+                exit(1);
+            }
+            g_secondary_width = tmp_i;
+        } else if (strcmp(argv[i], "--secondary-height") == 0 && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], 16, 8192, &tmp_i)) {
+                g_printerr("Invalid --secondary-height value\n");
+                exit(1);
+            }
+            g_secondary_height = tmp_i;
         } else if (strcmp(argv[i], "--fps") == 0 && i + 1 < argc) {
             if (!parse_int_arg(argv[++i], 1, 240, &tmp_i)) {
                 g_printerr("Invalid --fps value\n");
@@ -717,6 +853,8 @@ static void parse_args(int argc, char *argv[])
             g_low_latency = FALSE;
         } else if (strcmp(argv[i], "--tcp-only") == 0) {
             g_tcp_only = TRUE;
+        } else if (strcmp(argv[i], "--mpp") == 0) {
+            g_use_mpp = TRUE;
         } else if (strcmp(argv[i], "--quiet-rtspclient-logs") == 0) {
             g_quiet_rtspclient_logs = TRUE;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -728,6 +866,29 @@ static void parse_args(int argc, char *argv[])
             exit(1);
         }
     }
+
+    if (strcmp(g_mount_path, g_secondary_mount_path) == 0) {
+        g_printerr("--mount and --secondary-mount must be different\n");
+        exit(1);
+    }
+}
+
+static GstRTSPMediaFactory *create_rtsp_factory(gboolean reduced_resolution)
+{
+    MyFactory *custom_factory = (MyFactory *)g_object_new(my_factory_get_type(), NULL);
+    custom_factory->reduced_resolution = reduced_resolution;
+    GstRTSPMediaFactory *factory = GST_RTSP_MEDIA_FACTORY(custom_factory);
+
+    gst_rtsp_media_factory_set_shared(factory, TRUE);
+    gst_rtsp_media_factory_set_stop_on_disconnect(factory, TRUE);
+    gst_rtsp_media_factory_set_protocols(
+        factory,
+        g_tcp_only
+            ? GST_RTSP_LOWER_TRANS_TCP
+            : (GstRTSPLowerTrans)(GST_RTSP_LOWER_TRANS_UDP |
+                                  GST_RTSP_LOWER_TRANS_UDP_MCAST |
+                                  GST_RTSP_LOWER_TRANS_TCP));
+    return factory;
 }
 
 /* ---------- Main ---------- */
@@ -738,6 +899,7 @@ int main(int argc, char *argv[])
     GstRTSPServer *server;
     GstRTSPMountPoints *mounts;
     GstRTSPMediaFactory *factory;
+    GstRTSPMediaFactory *secondary_factory = NULL;
     guint id;
 
     parse_args(argc, argv);
@@ -762,21 +924,17 @@ int main(int argc, char *argv[])
 
     mounts = gst_rtsp_server_get_mount_points(server);
 
-    factory = GST_RTSP_MEDIA_FACTORY(g_object_new(my_factory_get_type(), NULL));
-    gst_rtsp_media_factory_set_shared(factory, TRUE);
-    gst_rtsp_media_factory_set_stop_on_disconnect(factory, TRUE);
-    gst_rtsp_media_factory_set_protocols(
-        factory,
-        g_tcp_only
-            ? GST_RTSP_LOWER_TRANS_TCP
-            : (GstRTSPLowerTrans)(GST_RTSP_LOWER_TRANS_UDP |
-                                  GST_RTSP_LOWER_TRANS_UDP_MCAST |
-                                  GST_RTSP_LOWER_TRANS_TCP));
+    factory = create_rtsp_factory(FALSE);
     // if (g_low_latency) {
     //     gst_rtsp_media_factory_set_latency(factory, 0);
     // }
 
     gst_rtsp_mount_points_add_factory(mounts, g_mount_path, factory);
+    if (g_mode != MODE_AUDIO) {
+        secondary_factory = create_rtsp_factory(TRUE);
+        gst_rtsp_mount_points_add_factory(
+            mounts, g_secondary_mount_path, secondary_factory);
+    }
     g_object_unref(mounts);
 
     id = gst_rtsp_server_attach(server, NULL);
@@ -803,6 +961,17 @@ int main(int argc, char *argv[])
                     video_codec_name(), g_mkv_path ? " (MKV video passthrough)" : "",
                     g_host, g_port, g_mount_path);
             break;
+    }
+    if (secondary_factory) {
+        g_print("RTSP %s reduced video %dx%d%s: rtsp://%s:%u%s\n",
+                video_codec_name(), g_secondary_width, g_secondary_height,
+                g_mode == MODE_BOTH ? "+audio" : "",
+                g_host, g_port, g_secondary_mount_path);
+    }
+    if (g_mode != MODE_AUDIO) {
+        g_print("Video encoder%s: %s\n",
+                g_mkv_path ? " for reduced stream" : "",
+                video_encoder_factory_name());
     }
     if (g_tcp_only) {
         g_print("RTP transport: TCP only\n");
