@@ -49,11 +49,15 @@ void configured_media_factory_init(ConfiguredMediaFactory *factory)
 
 MediaFactory::MediaFactory(const AppConfig &config)
     : config_(config),
-      pipelineBuilder_(config.isMkvSource()
-                           ? static_cast<MediaPipelineBuilder *>(
-                                 new MkvPipelineBuilder(config))
-                           : static_cast<MediaPipelineBuilder *>(
-                                 new CameraPipelineBuilder(config)))
+      primaryPipelineBuilder_(config.isMkvSource()
+                                  ? static_cast<MediaPipelineBuilder *>(
+                                        new MkvPipelineBuilder(config))
+                                  : static_cast<MediaPipelineBuilder *>(
+                                        new CameraPipelineBuilder(config))),
+      subMkvPipelineBuilder_(config.hasSubMkvSource()
+                                 ? static_cast<MediaPipelineBuilder *>(
+                                       new MkvPipelineBuilder(config))
+                                 : NULL)
 {
 }
 
@@ -65,7 +69,10 @@ GstRTSPMediaFactory *MediaFactory::create(bool reducedResolution) const
 {
     ConfiguredMediaFactory *configured = static_cast<ConfiguredMediaFactory *>(
         g_object_new(configured_media_factory_get_type(), NULL));
-    configured->pipelineBuilder = pipelineBuilder_.get();
+    configured->pipelineBuilder =
+        reducedResolution && subMkvPipelineBuilder_
+            ? subMkvPipelineBuilder_.get()
+            : primaryPipelineBuilder_.get();
     configured->reducedResolution = reducedResolution ? TRUE : FALSE;
 
     GstRTSPMediaFactory *factory = GST_RTSP_MEDIA_FACTORY(configured);

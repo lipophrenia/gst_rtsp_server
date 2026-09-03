@@ -27,12 +27,13 @@ bool AppConfig::subMkvHasAudio() const { return subMkvHasAudio_; }
 
 bool AppConfig::secondaryStreamAvailable() const
 {
-    if (!secondaryStreamEnabled_ || !isMkvSource()) {
+    if (!secondaryStreamEnabled_) {
         return false;
     }
-    return hasSubMkvSource()
-               ? (subMkvHasVideo_ || subMkvHasAudio_)
-               : hasVideo();
+    if (hasSubMkvSource()) {
+        return subMkvHasVideo_ || subMkvHasAudio_;
+    }
+    return isMkvSource() && hasVideo();
 }
 
 void AppConfig::applyMkvMediaInfo(bool hasVideo, bool hasAudio, VideoCodec codec)
@@ -192,7 +193,7 @@ void AppConfig::printUsage(const char *programName)
     g_print("  %s --mpp              # force mpph264enc/mpph265enc instead of x264enc/x265enc\n",
             programName);
     g_print("  %s --mkv FILE         # auto-detect tracks from FILE in ./mkv_files\n", programName);
-    g_print("  %s --mkv FILE --sub-mkv FILE  # use a second MKV as passthrough sub stream\n",
+    g_print("  %s --sub-mkv FILE  # use an MKV as passthrough sub stream\n",
             programName);
     g_print("  %s --mkv 0391_53_50.mkv\n", programName);
     g_print("  %s --video-device /dev/video0 --audio-device plughw:CARD=...,DEV=0\n",
@@ -336,11 +337,9 @@ void AppConfig::parse(int argc, char *argv[])
         }
     }
 
-    if (hasSubMkvSource() && !isMkvSource()) {
-        g_printerr("--sub-mkv requires a primary --mkv source\n");
-        std::exit(1);
-    }
-    if (secondaryStreamEnabled_ && isMkvSource() && mountPath_ == secondaryMountPath_) {
+    if (secondaryStreamEnabled_ &&
+        (isMkvSource() || hasSubMkvSource()) &&
+        mountPath_ == secondaryMountPath_) {
         g_printerr("--mount and --secondary-mount must be different\n");
         std::exit(1);
     }

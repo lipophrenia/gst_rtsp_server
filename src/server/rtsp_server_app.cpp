@@ -46,7 +46,8 @@ int RtspServerApp::run()
     gst_rtsp_mount_points_add_factory(
         mounts.get(), config_.mountPath().c_str(), mediaFactory_.create(false));
 
-    if (config_.secondaryStreamEnabled() && !config_.isMkvSource()) {
+    if (config_.secondaryStreamEnabled() &&
+        !config_.isMkvSource() && !config_.hasSubMkvSource()) {
         g_printerr("Warning: --sub-resize is ignored in camera mode because the camera "
                    "cannot be opened by two pipelines\n");
     }

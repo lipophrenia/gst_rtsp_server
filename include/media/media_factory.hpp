@@ -19,5 +19,6 @@ public:
 
 private:
     const AppConfig &config_;
-    std::unique_ptr<MediaPipelineBuilder> pipelineBuilder_;
+    std::unique_ptr<MediaPipelineBuilder> primaryPipelineBuilder_;
+    std::unique_ptr<MediaPipelineBuilder> subMkvPipelineBuilder_;
 };

@@ -12,6 +12,7 @@ Usage:
   $0 camera [h264|h265] [server options...]
   $0 mkv FILE [server options...]
   $0 --mkv FILE [server options...]
+  $0 [h264|h265] --sub-mkv FILE [server options...]
 
 Examples:
   $0 h264
@@ -20,6 +21,7 @@ Examples:
   $0 mkv 0391_53_50.mkv --port 8555
   $0 mkv 1000_55_60.mkv --sub-resize --secondary-mount /preview --secondary-width 640 --secondary-height 360
   $0 mkv 0391_53_50.mkv --sub-mkv 1000_55_60.mkv
+  $0 --mpp --sub-mkv 1000_55_60_360p.mkv
 EOF
 }
 

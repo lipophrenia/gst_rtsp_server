@@ -12,14 +12,16 @@ int main(int argc, char *argv[])
     config.parse(argc, argv);
 
     gst_init(&argc, &argv);
-    if (config.isMkvSource()) {
+    if (config.isMkvSource() || config.hasSubMkvSource()) {
         MkvProbe probe;
-        MkvMediaInfo mediaInfo;
-        if (!probe.inspect(config.mkvPath(), mediaInfo)) {
-            return 1;
+        if (config.isMkvSource()) {
+            MkvMediaInfo mediaInfo;
+            if (!probe.inspect(config.mkvPath(), mediaInfo)) {
+                return 1;
+            }
+            config.applyMkvMediaInfo(
+                mediaInfo.hasVideo(), mediaInfo.hasAudio(), mediaInfo.videoCodec());
         }
-        config.applyMkvMediaInfo(
-            mediaInfo.hasVideo(), mediaInfo.hasAudio(), mediaInfo.videoCodec());
 
         if (config.hasSubMkvSource()) {
             MkvMediaInfo subMediaInfo;
